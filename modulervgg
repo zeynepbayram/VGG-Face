@@ -1,0 +1,130 @@
+from pyexpat import model
+import cv2
+from pyzbar.pyzbar import decode
+from keras.models import Model, Sequential
+from keras.layers import Input, Convolution2D, ZeroPadding2D, MaxPooling2D, Flatten, Dense, Dropout, Activation
+from PIL import Image
+import numpy as np
+from keras.preprocessing.image import load_img, save_img, img_to_array
+from keras.applications.imagenet_utils import preprocess_input
+from keras.preprocessing import image
+import matplotlib.pyplot as plt
+from keras.models import load_model
+import os
+import warnings
+warnings.filterwarnings('ignore')
+import time
+
+class FaceVerification:
+
+    def __init__(self, epsilon = 0.40):
+        print("Building Caffe Face Detector..")
+        self.face_detector = cv2.dnn.readNetFromCaffe("C:/Users/Zeynep/Desktop/SVMfaceR/deploy.prototxt.txt", "C:/Users/Zeynep/Desktop/SVMfaceR/res10_300x300_ssd_iter_140000.caffemodel")
+
+        print("Building Verifier..")
+        self.verifier = load_model("busonmodel.h5")
+
+        self.epsilon = epsilon
+
+    def preprocess_image(self, image_path):
+        img = load_img(image_path, target_size=(224, 224))
+        img = img_to_array(img)
+        img = np.expand_dims(img, axis=0)
+        img = preprocess_input(img)
+        return img
+
+    def preprocess_image_rt(self, image):
+        img = cv2.resize(image, (224, 224))
+        img = img_to_array(img)
+        img = np.expand_dims(img, axis=0)
+        img = preprocess_input(img)
+        return img
+
+    def findCosineSimilarity(self, source_representation, test_representation):
+        a = np.matmul(np.transpose(source_representation), test_representation)
+        b = np.sum(np.multiply(source_representation, source_representation))
+        c = np.sum(np.multiply(test_representation, test_representation))
+        return 1 - (a / (np.sqrt(b) * np.sqrt(c)))
+
+    def findEuclideanDistance(self, source_representation, test_representation):
+        euclidean_distance = source_representation - test_representation
+        euclidean_distance = np.sum(np.multiply(euclidean_distance, euclidean_distance))
+        euclidean_distance = np.sqrt(euclidean_distance)
+        return euclidean_distance
+
+    def get_face_ssdnet(self, frame, image_size = 224):
+        (h, w) = frame.shape[:2]
+        resized_image = cv2.resize(frame, (300, 300))
+        blob = cv2.dnn.blobFromImage(resized_image, 1.0, (300, 300), (104.0, 177.0, 123.0))
+        self.face_detector.setInput(blob)
+        detections = self.face_detector.forward()
+        box = detections[0, 0, 0, 3:7] * np.array([w, h, w, h])
+        (startX, startY, endX, endY) = box.astype("int32")
+        face = frame[startY:endY, startX:endX]
+        cv2.rectangle(frame, (startX, startY), (endX, endY), (42, 64, 127), 2)
+        return face
+
+    def verifyFace(self, img1, img2):
+        #img1_representation = vgg_face_descriptor.predict(preprocess_image('C:/Users/Zeynep/Desktop/SVMfaceR/dataset/detectedfaces/%s' % (img1)))[0,:]
+        img1_representation = self.verifier.predict(self.preprocess_image_rt(img1))[0,:]
+        img2_representation = self.verifier.predict(self.preprocess_image_rt(img2))[0,:]
+        cosine_similarity = self.findCosineSimilarity(img1_representation, img2_representation)
+        euclidean_distance = self.findEuclideanDistance(img1_representation, img2_representation)
+        
+        if(cosine_similarity < self.epsilon):
+            return 1, cosine_similarity
+        else:
+            return 0, cosine_similarity
+    def barcode(self, frame):
+            for code in decode(frame):
+                return code.data.decode("utf-8")
+predictions = []
+cap = cv2.VideoCapture(0)
+#'C:/Users/Zeynep/Desktop/images/z121.jpg'
+ref = 'C:/Users/Zeynep/Desktop/images'
+fv = FaceVerification()
+barcode_succes = 0
+font = cv2.FONT_HERSHEY_SIMPLEX
+
+org = (30, 50)
+fontScale = 1
+color = (60,20,220)
+thickness = 2
+verified = 0
+while True:
+    ret, frame = cap.read(0)
+    if barcode_succes == 0:
+        m = fv.barcode(frame)
+    try:
+        ref2 = cv2.imread(ref + "/" + m +'.jpg')
+        barcode_succes = 1
+    except:
+        frame = cv2.putText(frame, 'Lutfen barkod okutunuz.', org, font, 
+                   fontScale, color, thickness, cv2.LINE_AA)
+    if barcode_succes == 1:
+        if not verified:
+            text = 'Verifyng...'
+            frame = cv2.putText(frame, text , org, font, fontScale, color, thickness, cv2.LINE_AA)
+        try:
+            face = fv.get_face_ssdnet(frame)
+            predictions.append((fv.verifyFace(face, fv.get_face_ssdnet(ref2)))[0])
+            frame = cv2.putText(frame, text ,org, font, fontScale, color, thickness, cv2.LINE_AA)
+            if len(predictions) == 10:
+                text = '% ' + str(sum(predictions) * 10) + 'verified'
+                if sum(predictions) >= 7:
+                    cv2.imshow('f', frame)
+                    verified = 1
+            
+                else:
+                    frame = cv2.putText(frame, "Tekrar deneniyor..", org, font, fontScale, color, thickness, cv2.LINE_AA)
+                    cv2.imshow('f', frame)
+                   
+                predictions = []
+        except:
+            frame = cv2.putText(frame, "Yuz Algilanamadi.", org, font, fontScale, color, thickness, cv2.LINE_AA)
+    cv2.imshow('f', frame)
+    key = cv2.waitKey(10)
+    if key == 27 or verified == 1:
+        break
+cap.release()
+        
